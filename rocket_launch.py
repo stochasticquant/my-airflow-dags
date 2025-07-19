@@ -1,5 +1,6 @@
 import json
 import pathlib
+import os
 from datetime import datetime
 import requests
 import requests.exceptions as requests_exceptions
@@ -11,22 +12,28 @@ from airflow.operators.bash import BashOperator
     dag_id="download_rocket_launches",
     description="Download rocket pictures of recently launched rockets.",
     start_date=datetime(2023, 1, 1),
-    schedule="@daily",  # ✅ Correct for Airflow 2.9+
+    schedule="@daily",
     catchup=False,
     tags=["rockets", "space", "downloads"],
 )
 def download_rocket_launches_dag():
 
-    # Download upcoming launch data
+    # Download launch data from API
     download_launches = BashOperator(
         task_id="download_launches",
-        bash_command="curl -o /tmp/launches.json -L 'https://ll.thespacedevs.com/2.0.0/launch/upcoming'",
+        bash_command="curl -s -o /tmp/launches.json -L 'https://ll.thespacedevs.com/2.0.0/launch/upcoming'",
     )
 
-    # Download all rocket images
+    # Download all rocket images from the launch data
     @task()
     def get_pictures():
-        pathlib.Path("/tmp/images").mkdir(parents=True, exist_ok=True)
+        pod_name = os.getenv("HOSTNAME", "unknown-worker")
+        timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        download_dir = f"/tmp/images/{timestamp}"
+        pathlib.Path(download_dir).mkdir(parents=True, exist_ok=True)
+
+        print(f"Running on worker pod: {pod_name}")
+        print(f"Saving images to: {download_dir}")
 
         with open("/tmp/launches.json") as f:
             launches = json.load(f)
@@ -35,25 +42,26 @@ def download_rocket_launches_dag():
             for image_url in image_urls:
                 try:
                     response = requests.get(image_url)
+                    response.raise_for_status()
                     image_filename = image_url.split("/")[-1]
-                    target_file = f"/tmp/images/{image_filename}"
+                    target_file = os.path.join(download_dir, image_filename)
                     with open(target_file, "wb") as img_file:
                         img_file.write(response.content)
-                    print(f"Downloaded {image_url} to {target_file}")
-                except requests_exceptions.MissingSchema:
-                    print(f"{image_url} appears to be an invalid URL.")
-                except requests_exceptions.ConnectionError:
-                    print(f"Could not connect to {image_url}.")
+                    print(f"✅ Downloaded {image_url} to {target_file}")
+                except requests_exceptions.RequestException as e:
+                    print(f"⚠️ Failed to download {image_url}: {str(e)}")
 
-    # Print how many images were downloaded
-    notify = BashOperator(
-        task_id="notify",
-        bash_command='echo "There are now $(ls /tmp/images/ | wc -l) images."',
-    )
+        return download_dir
 
-    # Define task dependencies using chaining
-    download_launches >> get_pictures() >> notify
+    # Notify how many images were downloaded
+    @task()
+    def notify(image_dir: str):
+        num_files = len(list(pathlib.Path(image_dir).glob("*")))
+        print(f"📸 There are now {num_files} images in {image_dir}")
 
+    # Task chaining
+    image_dir = get_pictures()
+    download_launches >> image_dir >> notify(image_dir)
 
 # Instantiate the DAG
 download_rocket_launches_dag()
