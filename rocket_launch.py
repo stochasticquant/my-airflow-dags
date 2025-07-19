@@ -7,22 +7,23 @@ import requests.exceptions as requests_exceptions
 from airflow.decorators import dag, task
 from airflow.operators.bash import BashOperator
 
-
 @dag(
     dag_id="download_rocket_launches",
     description="Download rocket pictures of recently launched rockets.",
-    start_date=datetime.utcnow(),  # or use days_ago(n) if you want backfills
-    schedule_interval="@daily",
+    start_date=datetime(2023, 1, 1),
+    schedule="@daily",  # ✅ Correct for Airflow 2.9+
     catchup=False,
     tags=["rockets", "space", "downloads"],
 )
 def download_rocket_launches_dag():
 
+    # Download upcoming launch data
     download_launches = BashOperator(
         task_id="download_launches",
         bash_command="curl -o /tmp/launches.json -L 'https://ll.thespacedevs.com/2.0.0/launch/upcoming'",
     )
 
+    # Download all rocket images
     @task()
     def get_pictures():
         pathlib.Path("/tmp/images").mkdir(parents=True, exist_ok=True)
@@ -44,12 +45,13 @@ def download_rocket_launches_dag():
                 except requests_exceptions.ConnectionError:
                     print(f"Could not connect to {image_url}.")
 
+    # Print how many images were downloaded
     notify = BashOperator(
         task_id="notify",
         bash_command='echo "There are now $(ls /tmp/images/ | wc -l) images."',
     )
 
-    # Set dependencies using TaskFlow-style chaining
+    # Define task dependencies using chaining
     download_launches >> get_pictures() >> notify
 
 
